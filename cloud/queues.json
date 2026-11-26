@@ -1,0 +1,68 @@
+{
+  "queues": [
+    {
+      "id": "daily-deepseek-brief",
+      "name": "DeepSeek Research",
+      "enabled": false,
+      "provider": "deepseek",
+      "model": "deepseek-chat",
+      "systemPrompt": "Be concise and structured with bullet points.",
+      "chainContext": true,
+      "autoRemoveCompleted": false,
+      "prompts": [
+        {
+          "id": "p1",
+          "text": "Summarize the top 3 emerging trends in open-weight LLMs and how developers are deploying them.",
+          "scheduledAt": null,
+          "status": "pending"
+        },
+        {
+          "id": "p2",
+          "text": "Based on the previous summary, suggest 2 practical weekend project ideas.",
+          "scheduledAt": null,
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "claude-writing",
+      "name": "Claude Assistant",
+      "enabled": false,
+      "provider": "anthropic",
+      "model": "claude-3-7-sonnet-latest",
+      "systemPrompt": "",
+      "chainContext": false,
+      "autoRemoveCompleted": false,
+      "prompts": [
+        {
+          "id": "p1",
+          "text": "Draft a short, punchy weekly productivity checklist for a software engineer.",
+          "scheduledAt": null,
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "chatgpt-queue",
+      "name": "ChatGPT Queue",
+      "enabled": false,
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "systemPrompt": "",
+      "chainContext": false,
+      "autoRemoveCompleted": false,
+      "prompts": []
+    },
+    {
+      "id": "gemini-queue",
+      "name": "Gemini Queue",
+      "enabled": false,
+      "provider": "gemini",
+      "model": "gemini-2.5-flash",
+      "systemPrompt": "",
+      "chainContext": false,
+      "autoRemoveCompleted": false,
+      "prompts": []
+    }
+  ]
+}
