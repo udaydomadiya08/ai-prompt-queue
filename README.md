@@ -33,7 +33,7 @@ Works out of the box on:
 - **Universal Pin Tab**: Click **📌 Pin Tab** on *any* `http://` or `https://` AI web app — including local/self-hosted UIs — to bind that queue to its own tab and grant per-origin permission on demand.
 - **Sequential Flow**: Automatically sends the next queued prompt as soon as the AI finishes streaming its response, with a configurable post-reply **Wait (s)** buffer per queue.
 - **Scheduled Prompts**: Pick a local date & time on any prompt to trigger it automatically via `chrome.alarms` — even when the popup is closed.
-- **Full Queue Management**: Add (`Ctrl+Enter` / `Cmd+Enter`), edit/replace text or schedule, move prompts between any queues, reorder (`↑` / `↓`), trigger immediately (`Send Now`), or delete items.
+- **Full Queue Management**: Add (`Enter` to add, `Shift+Enter` for newline), edit/replace text or schedule, move prompts between any queues, reorder (`↑` / `↓`), trigger immediately (`Send Now`), or delete items.
 - **Auto-Remove Completed Prompts**: Enabled by default so finished prompts are cleared automatically (toggle off to keep completed items marked as `Done`).
 - **Popup + Side Panel + Floating Pill**: Click the extension icon for the popup, right-click the icon → **Open side panel** to dock it beside your AI chat, and use the floating on-page pill to pause or manually advance (`Next`).
 

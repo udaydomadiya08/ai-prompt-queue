@@ -467,7 +467,7 @@ async function submitComposer() {
 el.btnSubmitPrompt.addEventListener('click', submitComposer);
 
 el.txtPrompt.addEventListener('keydown', (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     submitComposer();
   }
