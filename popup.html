@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Universal AI Prompt Queue</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <div>
+          <h1>Universal AI Prompt Queue</h1>
+          <p class="brand-sub">ChatGPT • Claude • DeepSeek • Gemini • Any AI</p>
+        </div>
+      </div>
+      <div class="mode-tabs" role="tablist">
+        <button id="tabChat" class="mode-tab active" data-mode="chat" role="tab">
+          Chat Mode <span id="badgeChat" class="badge">0</span>
+        </button>
+        <button id="tabTask" class="mode-tab" data-mode="task" role="tab">
+          Task Mode <span id="badgeTask" class="badge">0</span>
+        </button>
+      </div>
+    </header>
+
+    <section class="controls-bar">
+      <button id="btnToggleRun" class="btn btn-primary">▶ Start Queue</button>
+      <button id="btnBindTab" class="btn btn-secondary" title="Pin this queue to the active AI tab (works on any AI site)">
+        📌 Pin Tab
+      </button>
+      <button id="btnForceNext" class="btn btn-warning hidden" title="Mark current prompt done and advance">
+        ⏭ Done / Next
+      </button>
+    </section>
+
+    <section class="settings-bar">
+      <label class="toggle-label" title="Automatically start the next prompt once the current response finishes">
+        <input type="checkbox" id="chkSequential" checked />
+        <span>Sequential flow</span>
+      </label>
+      <label class="toggle-label" title="Remove each prompt from the queue once the AI finishes answering it">
+        <input type="checkbox" id="chkAutoRemove" checked />
+        <span>Auto-remove used</span>
+      </label>
+      <label class="delay-label" title="Seconds to wait after the AI stops streaming before advancing">
+        <span>Wait (s)</span>
+        <input type="number" id="numSettleDelay" min="1" max="60" value="3" />
+      </label>
+    </section>
+
+    <section class="composer" id="composerBox">
+      <div id="editBanner" class="edit-banner hidden">
+        <span>Editing queued prompt</span>
+        <div class="edit-banner-right">
+          <label class="move-label">
+            Mode:
+            <select id="selMoveMode">
+              <option value="chat">Chat Mode</option>
+              <option value="task">Task Mode</option>
+            </select>
+          </label>
+          <button id="btnCancelEdit" class="btn-link">Cancel</button>
+        </div>
+      </div>
+
+      <textarea
+        id="txtPrompt"
+        rows="3"
+        placeholder="Write a prompt to queue for any AI... (Ctrl+Enter to add)"
+      ></textarea>
+
+      <div class="composer-footer">
+        <div class="schedule-group">
+          <label for="dtSchedule">Schedule:</label>
+          <input type="datetime-local" id="dtSchedule" />
+          <button id="btnClearSchedule" class="btn-icon" title="Clear schedule">✕</button>
+        </div>
+        <button id="btnSubmitPrompt" class="btn btn-accent">+ Add Prompt</button>
+      </div>
+    </section>
+
+    <div id="statusToast" class="toast hidden"></div>
+
+    <section class="queue-section">
+      <div class="queue-header">
+        <span id="queueTitle">Chat Mode Queue</span>
+        <div class="queue-actions">
+          <button id="btnClearCompleted" class="btn-link hidden">Clear Done</button>
+          <button id="btnClearAll" class="btn-link danger">Clear All</button>
+        </div>
+      </div>
+      <div id="queueList" class="queue-list"></div>
+    </section>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
