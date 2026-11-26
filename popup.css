@@ -5,16 +5,10 @@
   --border: #2c364d;
   --text: #f1f5f9;
   --muted: #94a3b8;
-  --chat: #38bdf8;
-  --task: #a78bfa;
   --accent: #38bdf8;
   --success: #34d399;
   --warning: #fbbf24;
   --danger: #f87171;
-}
-
-body.mode-task {
-  --accent: var(--task);
 }
 
 * {
@@ -48,6 +42,13 @@ body {
   gap: 8px;
 }
 
+.brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -60,10 +61,11 @@ body {
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 10px var(--accent);
+  flex-shrink: 0;
 }
 
 .brand h1 {
-  font-size: 15px;
+  font-size: 14.5px;
   font-weight: 700;
   letter-spacing: -0.01em;
 }
@@ -74,52 +76,80 @@ body {
   margin-top: 1px;
 }
 
-.mode-tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
+.btn-add-queue {
+  background: var(--surface-2);
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.btn-add-queue:hover {
+  border-color: var(--accent);
+  background: rgba(56, 189, 248, 0.1);
+}
+
+.queue-tabs {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow-x: auto;
   background: var(--surface);
   padding: 4px;
   border-radius: 10px;
   border: 1px solid var(--border);
+  scrollbar-width: thin;
 }
 
-.mode-tab {
+.queue-tab {
   background: transparent;
   color: var(--muted);
-  border: none;
+  border: 1px solid transparent;
   border-radius: 7px;
-  padding: 7px 10px;
-  font-size: 12.5px;
+  padding: 6px 10px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: 6px;
-  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
-.mode-tab:hover {
+.queue-tab:hover {
   color: var(--text);
 }
 
-.mode-tab.active[data-mode="chat"] {
-  background: rgba(56, 189, 248, 0.16);
-  color: var(--chat);
+.queue-tab.active {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: var(--accent);
 }
 
-.mode-tab.active[data-mode="task"] {
-  background: rgba(167, 139, 250, 0.18);
-  color: var(--task);
+.tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tab-run-pulse {
+  box-shadow: 0 0 6px currentColor;
 }
 
 .badge {
-  background: var(--surface-2);
+  background: var(--bg);
   color: var(--text);
   padding: 1px 6px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 700;
 }
 
@@ -249,6 +279,7 @@ body {
   border-radius: 5px;
   padding: 2px 5px;
   font-size: 11px;
+  max-width: 130px;
 }
 
 #txtPrompt {
@@ -336,14 +367,62 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   font-size: 12px;
   font-weight: 600;
   color: var(--muted);
 }
 
+.queue-title-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+#queueTitle {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rename-input {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  width: 140px;
+  outline: none;
+}
+
+.btn-mini-icon {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.btn-mini-icon:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.btn-mini-icon.danger:hover {
+  color: var(--danger);
+}
+
 .queue-actions {
   display: flex;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .btn-link {
@@ -393,10 +472,6 @@ body {
   background: rgba(56, 189, 248, 0.08);
 }
 
-body.mode-task .card.running {
-  background: rgba(167, 139, 250, 0.09);
-}
-
 .card.completed {
   opacity: 0.65;
 }
@@ -432,12 +507,7 @@ body.mode-task .card.running {
 
 .pill.running {
   background: rgba(56, 189, 248, 0.2);
-  color: var(--chat);
-}
-
-body.mode-task .pill.running {
-  background: rgba(167, 139, 250, 0.22);
-  color: var(--task);
+  color: var(--accent);
 }
 
 .pill.scheduled {

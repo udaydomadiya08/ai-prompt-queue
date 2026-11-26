@@ -1,9 +1,21 @@
 // Universal AI Prompt Queue - Background Service Worker (Manifest V3)
-// Manages separate Chat Mode & Task Mode queues, chrome.alarms scheduling,
+// Manages N independent AI queues/workflows, chrome.alarms scheduling,
 // sequential execution flow, and auto-removal of completed prompts across any AI web app.
 
-const STORAGE_KEY = 'universalAiPromptQueueState_v1';
-const LEGACY_STORAGE_KEY = 'geminiPromptQueueState_v1';
+const STORAGE_KEY = 'universalAiPromptQueueState_v2';
+const LEGACY_V1_KEY = 'universalAiPromptQueueState_v1';
+const LEGACY_GEMINI_KEY = 'geminiPromptQueueState_v1';
+
+const QUEUE_COLORS = [
+  '#38bdf8', // Sky
+  '#a78bfa', // Violet
+  '#34d399', // Emerald
+  '#fbbf24', // Amber
+  '#f472b6', // Pink
+  '#fb923c', // Orange
+  '#2dd4bf', // Teal
+  '#818cf8'  // Indigo
+];
 
 const KNOWN_AI_HOSTS = [
   'chatgpt.com',
@@ -79,25 +91,33 @@ function getProviderLabel(urlStr) {
   }
 }
 
-const DEFAULT_MODE_STATE = (mode) => ({
-  mode,
-  isRunning: false,
-  sequential: true,
-  autoRemoveCompleted: true,
-  settleDelaySec: mode === 'task' ? 5 : 3,
-  boundTabId: null,
-  boundTabLabel: null,
-  activeItemId: null,
-  items: []
-});
+function makeQueueId() {
+  return `q_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
 
-const DEFAULT_STATE = () => ({
-  activeMode: 'chat',
-  modes: {
-    chat: DEFAULT_MODE_STATE('chat'),
-    task: DEFAULT_MODE_STATE('task')
-  }
-});
+function createQueueObject(name = 'Queue 1', colorIndex = 0, overrides = {}) {
+  return {
+    id: overrides.id || makeQueueId(),
+    name: String(name || 'Queue').trim() || 'Queue',
+    color: overrides.color || QUEUE_COLORS[colorIndex % QUEUE_COLORS.length],
+    isRunning: Boolean(overrides.isRunning),
+    sequential: overrides.sequential !== undefined ? Boolean(overrides.sequential) : true,
+    autoRemoveCompleted: overrides.autoRemoveCompleted !== undefined ? Boolean(overrides.autoRemoveCompleted) : true,
+    settleDelaySec: typeof overrides.settleDelaySec === 'number' ? overrides.settleDelaySec : 3,
+    boundTabId: overrides.boundTabId || null,
+    boundTabLabel: overrides.boundTabLabel || null,
+    activeItemId: overrides.activeItemId || null,
+    items: Array.isArray(overrides.items) ? overrides.items : []
+  };
+}
+
+function DEFAULT_STATE() {
+  const first = createQueueObject('Queue 1', 0);
+  return {
+    activeQueueId: first.id,
+    queues: [first]
+  };
+}
 
 // Simple mutex to prevent concurrent storage read/write races
 let stateLock = Promise.resolve();
@@ -107,31 +127,78 @@ function withStateLock(fn) {
   return next;
 }
 
+function migrateLegacyModes(legacy) {
+  const queues = [];
+  const chat = legacy.modes?.chat;
+  const task = legacy.modes?.task;
+
+  if (chat) {
+    queues.push(
+      createQueueObject(chat.boundTabLabel || 'Queue 1', 0, {
+        isRunning: chat.isRunning,
+        sequential: chat.sequential,
+        autoRemoveCompleted: chat.autoRemoveCompleted,
+        settleDelaySec: chat.settleDelaySec,
+        boundTabId: chat.boundTabId,
+        boundTabLabel: chat.boundTabLabel,
+        activeItemId: chat.activeItemId,
+        items: chat.items
+      })
+    );
+  }
+  if (task && ((task.items && task.items.length > 0) || task.boundTabId)) {
+    queues.push(
+      createQueueObject(task.boundTabLabel || 'Queue 2', 1, {
+        isRunning: task.isRunning,
+        sequential: task.sequential,
+        autoRemoveCompleted: task.autoRemoveCompleted,
+        settleDelaySec: task.settleDelaySec,
+        boundTabId: task.boundTabId,
+        boundTabLabel: task.boundTabLabel,
+        activeItemId: task.activeItemId,
+        items: task.items
+      })
+    );
+  }
+  if (queues.length === 0) {
+    queues.push(createQueueObject('Queue 1', 0));
+  }
+  return {
+    activeQueueId: queues[0].id,
+    queues
+  };
+}
+
 async function loadState() {
-  const res = await chrome.storage.local.get([STORAGE_KEY, LEGACY_STORAGE_KEY]);
+  const res = await chrome.storage.local.get([STORAGE_KEY, LEGACY_V1_KEY, LEGACY_GEMINI_KEY]);
   let raw = res[STORAGE_KEY];
 
-  // Migrate from legacy Gemini-only storage key if present
-  if ((!raw || !raw.modes) && res[LEGACY_STORAGE_KEY] && res[LEGACY_STORAGE_KEY].modes) {
-    raw = res[LEGACY_STORAGE_KEY];
-    await chrome.storage.local.set({ [STORAGE_KEY]: raw });
+  if (!raw || !Array.isArray(raw.queues)) {
+    const legacy = res[LEGACY_V1_KEY] || res[LEGACY_GEMINI_KEY];
+    if (legacy && legacy.modes) {
+      raw = migrateLegacyModes(legacy);
+      await chrome.storage.local.set({ [STORAGE_KEY]: raw });
+    } else {
+      raw = DEFAULT_STATE();
+      await chrome.storage.local.set({ [STORAGE_KEY]: raw });
+    }
   }
 
-  if (!raw || !raw.modes) {
-    const fresh = DEFAULT_STATE();
-    await chrome.storage.local.set({ [STORAGE_KEY]: fresh });
-    return fresh;
+  if (raw.queues.length === 0) {
+    raw.queues.push(createQueueObject('Queue 1', 0));
   }
 
-  // Ensure both modes exist with all defaults
-  for (const m of ['chat', 'task']) {
-    raw.modes[m] = Object.assign(DEFAULT_MODE_STATE(m), raw.modes[m] || {});
-    if (!Array.isArray(raw.modes[m].items)) raw.modes[m].items = [];
+  raw.queues = raw.queues.map((q, idx) => createQueueObject(q.name || `Queue ${idx + 1}`, idx, q));
+
+  if (!raw.queues.some((q) => q.id === raw.activeQueueId)) {
+    raw.activeQueueId = raw.queues[0].id;
   }
-  if (raw.activeMode !== 'chat' && raw.activeMode !== 'task') {
-    raw.activeMode = 'chat';
-  }
+
   return raw;
+}
+
+function findQueue(state, queueId) {
+  return state.queues.find((q) => q.id === queueId) || null;
 }
 
 async function saveState(state) {
@@ -151,12 +218,12 @@ async function syncAllAlarms(state) {
   const existingAlarms = await chrome.alarms.getAll();
   const desiredAlarms = new Map();
 
-  for (const mode of ['chat', 'task']) {
-    for (const item of state.modes[mode].items) {
+  for (const queue of state.queues) {
+    for (const item of queue.items) {
       if (item.status === 'pending' && item.scheduledAt) {
         const when = Number(item.scheduledAt);
         if (!Number.isNaN(when) && when > Date.now() - 60000) {
-          const alarmName = `prompt::${mode}::${item.id}`;
+          const alarmName = `prompt::${queue.id}::${item.id}`;
           desiredAlarms.set(alarmName, Math.max(Date.now() + 500, when));
         }
       }
@@ -174,18 +241,17 @@ async function syncAllAlarms(state) {
   }
 }
 
-async function resolveTargetTab(modeState) {
+async function resolveTargetTab(queue) {
   // 1. Check boundTabId if set (supports ANY http/https tab)
-  if (modeState.boundTabId) {
+  if (queue.boundTabId) {
     try {
-      const tab = await chrome.tabs.get(modeState.boundTabId);
+      const tab = await chrome.tabs.get(queue.boundTabId);
       if (tab && isWebUrl(tab.url)) {
         return tab;
       }
     } catch {
-      // Bound tab was closed
-      modeState.boundTabId = null;
-      modeState.boundTabLabel = null;
+      queue.boundTabId = null;
+      queue.boundTabLabel = null;
     }
   }
 
@@ -210,7 +276,6 @@ async function ensureContentScript(tabId) {
     const res = await chrome.tabs.sendMessage(tabId, { type: 'PING' });
     if (res && res.ok) return true;
   } catch {
-    // Content script not yet injected (e.g. tab opened before extension installed, or custom AI host)
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
@@ -229,30 +294,26 @@ async function ensureContentScript(tabId) {
 async function pushOverlayStatusToTabs(state) {
   try {
     const tabs = await chrome.tabs.query({});
-    const chatBound = state.modes.chat.boundTabId;
-    const taskBound = state.modes.task.boundTabId;
+    const boundIds = new Set(state.queues.map((q) => q.boundTabId).filter(Boolean));
+
+    const queueSummaries = state.queues.map((q) => ({
+      id: q.id,
+      name: q.name,
+      color: q.color,
+      isRunning: q.isRunning,
+      activeItemId: q.activeItemId,
+      remaining: q.items.filter((i) => i.status === 'pending' || i.status === 'running').length,
+      boundTabId: q.boundTabId
+    }));
 
     for (const tab of tabs) {
-      if (!isKnownAiUrl(tab.url) && tab.id !== chatBound && tab.id !== taskBound) {
+      if (!isKnownAiUrl(tab.url) && !boundIds.has(tab.id)) {
         continue;
       }
-      const chatPending = state.modes.chat.items.filter((i) => i.status === 'pending' || i.status === 'running').length;
-      const taskPending = state.modes.task.items.filter((i) => i.status === 'pending' || i.status === 'running').length;
       chrome.tabs.sendMessage(tab.id, {
         type: 'OVERLAY_STATUS',
         payload: {
-          chat: {
-            isRunning: state.modes.chat.isRunning,
-            activeItemId: state.modes.chat.activeItemId,
-            remaining: chatPending,
-            boundTabId: chatBound
-          },
-          task: {
-            isRunning: state.modes.task.isRunning,
-            activeItemId: state.modes.task.activeItemId,
-            remaining: taskPending,
-            boundTabId: taskBound
-          },
+          queues: queueSummaries,
           tabId: tab.id
         }
       }).catch(() => {});
@@ -262,79 +323,75 @@ async function pushOverlayStatusToTabs(state) {
   }
 }
 
-function getNextEligibleItem(modeState, specificItemId = null) {
+function getNextEligibleItem(queue, specificItemId = null) {
   const now = Date.now();
   if (specificItemId) {
-    return modeState.items.find((i) => i.id === specificItemId && i.status !== 'running') || null;
+    return queue.items.find((i) => i.id === specificItemId && i.status !== 'running') || null;
   }
-  // Prefer any due scheduled item first, otherwise first unscheduled pending item
-  const dueScheduled = modeState.items.find(
+  const dueScheduled = queue.items.find(
     (i) => i.status === 'pending' && i.scheduledAt && Number(i.scheduledAt) <= now + 1000
   );
   if (dueScheduled) return dueScheduled;
 
-  if (!modeState.isRunning) return null;
+  if (!queue.isRunning) return null;
 
-  return modeState.items.find(
+  return queue.items.find(
     (i) => i.status === 'pending' && (!i.scheduledAt || Number(i.scheduledAt) <= now + 1000)
   ) || null;
 }
 
-async function dispatchNextForMode(mode, specificItemId = null) {
+async function dispatchNextForQueue(queueId, specificItemId = null) {
   return withStateLock(async () => {
     const state = await loadState();
-    const modeState = state.modes[mode];
+    const queue = findQueue(state, queueId);
+    if (!queue) return { ok: false, reason: 'Queue not found' };
 
-    // Do not overlap if a prompt is already running in this mode
-    if (modeState.activeItemId) {
-      const stillRunning = modeState.items.find((i) => i.id === modeState.activeItemId && i.status === 'running');
-      if (stillRunning) return { ok: false, reason: 'Already running a prompt in this mode' };
-      modeState.activeItemId = null;
+    if (queue.activeItemId) {
+      const stillRunning = queue.items.find((i) => i.id === queue.activeItemId && i.status === 'running');
+      if (stillRunning) return { ok: false, reason: 'Already running a prompt in this queue' };
+      queue.activeItemId = null;
     }
 
-    const item = getNextEligibleItem(modeState, specificItemId);
+    const item = getNextEligibleItem(queue, specificItemId);
     if (!item) {
-      const anyPending = modeState.items.some((i) => i.status === 'pending');
+      const anyPending = queue.items.some((i) => i.status === 'pending');
       if (!anyPending) {
-        modeState.isRunning = false;
+        queue.isRunning = false;
       }
       await saveState(state);
       return { ok: false, reason: 'No eligible prompt to send right now' };
     }
 
-    const tab = await resolveTargetTab(modeState);
+    const tab = await resolveTargetTab(queue);
     if (!tab || !tab.id) {
       item.lastError = 'No AI tab found. Open ChatGPT, Claude, DeepSeek, Gemini, etc., or Pin any AI tab.';
-      modeState.isRunning = false;
+      queue.isRunning = false;
       await saveState(state);
       return { ok: false, reason: item.lastError };
     }
 
-    // Mark item running
     item.status = 'running';
     item.startedAt = Date.now();
     item.lastError = null;
-    modeState.activeItemId = item.id;
+    queue.activeItemId = item.id;
     await saveState(state);
 
-    // Ensure content script is active on already-open or custom tabs
     await ensureContentScript(tab.id);
 
-    // Send command to content script
     let sendRes = null;
     try {
       sendRes = await chrome.tabs.sendMessage(tab.id, {
         type: 'EXECUTE_PROMPT',
-        mode,
+        queueId: queue.id,
         itemId: item.id,
         text: item.text,
-        settleDelayMs: Math.max(1500, (modeState.settleDelaySec || 3) * 1000)
+        settleDelayMs: Math.max(1500, (queue.settleDelaySec || 3) * 1000)
       });
     } catch {
       item.status = 'pending';
       item.lastError = `Refresh ${getProviderLabel(tab.url)} (or re-pin the tab) so the extension can connect.`;
-      modeState.activeItemId = null;
-      modeState.isRunning = false;
+      queue.activeItemId = null;
+      queue.isRunning = false;
       await saveState(state);
       return { ok: false, reason: item.lastError };
     }
@@ -342,8 +399,8 @@ async function dispatchNextForMode(mode, specificItemId = null) {
     if (!sendRes || !sendRes.ok) {
       item.status = 'pending';
       item.lastError = (sendRes && sendRes.error) || `Failed to inject prompt into ${getProviderLabel(tab.url)}.`;
-      modeState.activeItemId = null;
-      modeState.isRunning = false;
+      queue.activeItemId = null;
+      queue.isRunning = false;
       await saveState(state);
       return { ok: false, reason: item.lastError };
     }
@@ -352,44 +409,43 @@ async function dispatchNextForMode(mode, specificItemId = null) {
   });
 }
 
-async function handlePromptCompleted(mode, itemId, success = true, errorMsg = null) {
+async function handlePromptCompleted(queueId, itemId, success = true, errorMsg = null) {
   let shouldAdvance = false;
 
   await withStateLock(async () => {
     const state = await loadState();
-    const modeState = state.modes[mode];
-    if (!modeState) return;
+    const queue = findQueue(state, queueId);
+    if (!queue) return;
 
-    const idx = modeState.items.findIndex((i) => i.id === itemId);
+    const idx = queue.items.findIndex((i) => i.id === itemId);
     if (idx !== -1) {
       if (success) {
-        if (modeState.autoRemoveCompleted) {
-          modeState.items.splice(idx, 1);
+        if (queue.autoRemoveCompleted) {
+          queue.items.splice(idx, 1);
         } else {
-          modeState.items[idx].status = 'completed';
-          modeState.items[idx].completedAt = Date.now();
-          modeState.items[idx].lastError = null;
+          queue.items[idx].status = 'completed';
+          queue.items[idx].completedAt = Date.now();
+          queue.items[idx].lastError = null;
         }
       } else {
-        modeState.items[idx].status = 'pending';
-        modeState.items[idx].lastError = errorMsg || 'Interrupted before completion.';
-        modeState.isRunning = false;
+        queue.items[idx].status = 'pending';
+        queue.items[idx].lastError = errorMsg || 'Interrupted before completion.';
+        queue.isRunning = false;
       }
     }
 
-    if (modeState.activeItemId === itemId) {
-      modeState.activeItemId = null;
+    if (queue.activeItemId === itemId) {
+      queue.activeItemId = null;
     }
 
-    // Decide whether to advance to the next prompt in sequential flow
     if (success) {
-      const nextDue = getNextEligibleItem(modeState);
-      if (nextDue && ((modeState.isRunning && modeState.sequential) || (nextDue.scheduledAt && Number(nextDue.scheduledAt) <= Date.now() + 1000))) {
+      const nextDue = getNextEligibleItem(queue);
+      if (nextDue && ((queue.isRunning && queue.sequential) || (nextDue.scheduledAt && Number(nextDue.scheduledAt) <= Date.now() + 1000))) {
         shouldAdvance = true;
       } else {
-        const anyUnscheduledPending = modeState.items.some((i) => i.status === 'pending' && !i.scheduledAt);
+        const anyUnscheduledPending = queue.items.some((i) => i.status === 'pending' && !i.scheduledAt);
         if (!anyUnscheduledPending) {
-          modeState.isRunning = false;
+          queue.isRunning = false;
         }
       }
     }
@@ -399,7 +455,7 @@ async function handlePromptCompleted(mode, itemId, success = true, errorMsg = nu
 
   if (shouldAdvance) {
     setTimeout(() => {
-      dispatchNextForMode(mode);
+      dispatchNextForQueue(queueId);
     }, 1000);
   }
 }
@@ -407,19 +463,19 @@ async function handlePromptCompleted(mode, itemId, success = true, errorMsg = nu
 // Alarm listener for scheduled prompts
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (!alarm.name.startsWith('prompt::')) return;
-  const [, mode, itemId] = alarm.name.split('::');
-  if (!mode || !itemId) return;
+  const [, queueId, itemId] = alarm.name.split('::');
+  if (!queueId || !itemId) return;
 
   const state = await loadState();
-  const modeState = state.modes[mode];
-  if (!modeState) return;
+  const queue = findQueue(state, queueId);
+  if (!queue) return;
 
-  const item = modeState.items.find((i) => i.id === itemId);
+  const item = queue.items.find((i) => i.id === itemId);
   if (!item || item.status !== 'pending') return;
 
-  if (modeState.activeItemId) return;
+  if (queue.activeItemId) return;
 
-  await dispatchNextForMode(mode, itemId);
+  await dispatchNextForQueue(queueId, itemId);
 });
 
 // Clean up bound tab if closed
@@ -427,10 +483,10 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   await withStateLock(async () => {
     const state = await loadState();
     let changed = false;
-    for (const mode of ['chat', 'task']) {
-      if (state.modes[mode].boundTabId === tabId) {
-        state.modes[mode].boundTabId = null;
-        state.modes[mode].boundTabLabel = null;
+    for (const queue of state.queues) {
+      if (queue.boundTabId === tabId) {
+        queue.boundTabId = null;
+        queue.boundTabLabel = null;
         changed = true;
       }
     }
@@ -449,13 +505,62 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
 
-        case 'SET_ACTIVE_MODE': {
+        case 'SET_ACTIVE_QUEUE': {
           await withStateLock(async () => {
             const state = await loadState();
-            if (msg.mode === 'chat' || msg.mode === 'task') {
-              state.activeMode = msg.mode;
+            if (findQueue(state, msg.queueId)) {
+              state.activeQueueId = msg.queueId;
               await saveState(state);
             }
+          });
+          sendResponse({ ok: true });
+          return;
+        }
+
+        case 'CREATE_QUEUE': {
+          let created = null;
+          await withStateLock(async () => {
+            const state = await loadState();
+            const nextNum = state.queues.length + 1;
+            const name = (msg.name || '').trim() || `Queue ${nextNum}`;
+            created = createQueueObject(name, state.queues.length);
+            state.queues.push(created);
+            state.activeQueueId = created.id;
+            await saveState(state);
+          });
+          sendResponse({ ok: true, queue: created });
+          return;
+        }
+
+        case 'RENAME_QUEUE': {
+          await withStateLock(async () => {
+            const state = await loadState();
+            const queue = findQueue(state, msg.queueId);
+            const cleanName = (msg.name || '').trim();
+            if (queue && cleanName) {
+              queue.name = cleanName.slice(0, 32);
+              await saveState(state);
+            }
+          });
+          sendResponse({ ok: true });
+          return;
+        }
+
+        case 'DELETE_QUEUE': {
+          await withStateLock(async () => {
+            const state = await loadState();
+            const idx = state.queues.findIndex((q) => q.id === msg.queueId);
+            if (idx === -1) return;
+            state.queues.splice(idx, 1);
+            if (state.queues.length === 0) {
+              const fallback = createQueueObject('Queue 1', 0);
+              state.queues.push(fallback);
+            }
+            if (state.activeQueueId === msg.queueId || !findQueue(state, state.activeQueueId)) {
+              const nextIdx = Math.min(idx, state.queues.length - 1);
+              state.activeQueueId = state.queues[nextIdx].id;
+            }
+            await saveState(state);
           });
           sendResponse({ ok: true });
           return;
@@ -465,7 +570,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           let newItem = null;
           await withStateLock(async () => {
             const state = await loadState();
-            const modeState = state.modes[msg.mode];
+            const queue = findQueue(state, msg.queueId);
+            if (!queue) return;
             newItem = {
               id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
               text: (msg.text || '').trim(),
@@ -476,7 +582,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               completedAt: null,
               lastError: null
             };
-            modeState.items.push(newItem);
+            queue.items.push(newItem);
             await saveState(state);
           });
           sendResponse({ ok: true, item: newItem });
@@ -486,11 +592,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'UPDATE_PROMPT': {
           await withStateLock(async () => {
             const state = await loadState();
-            const modeState = state.modes[msg.mode];
-            const idx = modeState.items.findIndex((i) => i.id === msg.itemId);
+            const queue = findQueue(state, msg.queueId);
+            if (!queue) return;
+            const idx = queue.items.findIndex((i) => i.id === msg.itemId);
             if (idx === -1) return;
 
-            const item = modeState.items[idx];
+            const item = queue.items[idx];
             if (typeof msg.text === 'string') item.text = msg.text.trim();
             if (msg.scheduledAt !== undefined) {
               item.scheduledAt = msg.scheduledAt ? Number(msg.scheduledAt) : null;
@@ -501,11 +608,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               item.completedAt = null;
             }
 
-            if (msg.targetMode && msg.targetMode !== msg.mode && state.modes[msg.targetMode]) {
-              modeState.items.splice(idx, 1);
-              if (modeState.activeItemId === item.id) modeState.activeItemId = null;
-              item.status = 'pending';
-              state.modes[msg.targetMode].items.push(item);
+            if (msg.targetQueueId && msg.targetQueueId !== msg.queueId) {
+              const targetQueue = findQueue(state, msg.targetQueueId);
+              if (targetQueue) {
+                queue.items.splice(idx, 1);
+                if (queue.activeItemId === item.id) queue.activeItemId = null;
+                item.status = 'pending';
+                targetQueue.items.push(item);
+              }
             }
 
             await saveState(state);
@@ -517,10 +627,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'DELETE_PROMPT': {
           await withStateLock(async () => {
             const state = await loadState();
-            const modeState = state.modes[msg.mode];
-            modeState.items = modeState.items.filter((i) => i.id !== msg.itemId);
-            if (modeState.activeItemId === msg.itemId) {
-              modeState.activeItemId = null;
+            const queue = findQueue(state, msg.queueId);
+            if (!queue) return;
+            queue.items = queue.items.filter((i) => i.id !== msg.itemId);
+            if (queue.activeItemId === msg.itemId) {
+              queue.activeItemId = null;
             }
             await saveState(state);
           });
@@ -531,7 +642,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'REORDER_PROMPT': {
           await withStateLock(async () => {
             const state = await loadState();
-            const items = state.modes[msg.mode].items;
+            const queue = findQueue(state, msg.queueId);
+            if (!queue) return;
+            const items = queue.items;
             const idx = items.findIndex((i) => i.id === msg.itemId);
             if (idx === -1) return;
             const targetIdx = msg.direction === 'up' ? idx - 1 : idx + 1;
@@ -547,13 +660,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'CLEAR_QUEUE': {
           await withStateLock(async () => {
             const state = await loadState();
-            const modeState = state.modes[msg.mode];
+            const queue = findQueue(state, msg.queueId);
+            if (!queue) return;
             if (msg.completedOnly) {
-              modeState.items = modeState.items.filter((i) => i.status !== 'completed');
+              queue.items = queue.items.filter((i) => i.status !== 'completed');
             } else {
-              modeState.items = [];
-              modeState.activeItemId = null;
-              modeState.isRunning = false;
+              queue.items = [];
+              queue.activeItemId = null;
+              queue.isRunning = false;
             }
             await saveState(state);
           });
@@ -564,13 +678,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'UPDATE_SETTINGS': {
           await withStateLock(async () => {
             const state = await loadState();
-            const modeState = state.modes[msg.mode];
-            if (typeof msg.sequential === 'boolean') modeState.sequential = msg.sequential;
+            const queue = findQueue(state, msg.queueId);
+            if (!queue) return;
+            if (typeof msg.sequential === 'boolean') queue.sequential = msg.sequential;
             if (typeof msg.autoRemoveCompleted === 'boolean') {
-              modeState.autoRemoveCompleted = msg.autoRemoveCompleted;
+              queue.autoRemoveCompleted = msg.autoRemoveCompleted;
             }
             if (typeof msg.settleDelaySec === 'number' && msg.settleDelaySec >= 1 && msg.settleDelaySec <= 60) {
-              modeState.settleDelaySec = msg.settleDelaySec;
+              queue.settleDelaySec = msg.settleDelaySec;
             }
             await saveState(state);
           });
@@ -582,9 +697,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (msg.unbind) {
             await withStateLock(async () => {
               const state = await loadState();
-              state.modes[msg.mode].boundTabId = null;
-              state.modes[msg.mode].boundTabLabel = null;
-              await saveState(state);
+              const queue = findQueue(state, msg.queueId);
+              if (queue) {
+                queue.boundTabId = null;
+                queue.boundTabLabel = null;
+                await saveState(state);
+              }
             });
             sendResponse({ ok: true, tabId: null, label: null });
             return;
@@ -602,9 +720,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
           await withStateLock(async () => {
             const state = await loadState();
-            state.modes[msg.mode].boundTabId = current.id;
-            state.modes[msg.mode].boundTabLabel = label;
-            await saveState(state);
+            const queue = findQueue(state, msg.queueId);
+            if (queue) {
+              queue.boundTabId = current.id;
+              queue.boundTabLabel = label;
+              await saveState(state);
+            }
           });
           sendResponse({ ok: true, tabId: current.id, label });
           return;
@@ -613,10 +734,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'START_QUEUE': {
           await withStateLock(async () => {
             const state = await loadState();
-            state.modes[msg.mode].isRunning = true;
-            await saveState(state);
+            const queue = findQueue(state, msg.queueId);
+            if (queue) {
+              queue.isRunning = true;
+              await saveState(state);
+            }
           });
-          const res = await dispatchNextForMode(msg.mode);
+          const res = await dispatchNextForQueue(msg.queueId);
           sendResponse(res);
           return;
         }
@@ -624,31 +748,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'PAUSE_QUEUE': {
           await withStateLock(async () => {
             const state = await loadState();
-            state.modes[msg.mode].isRunning = false;
-            await saveState(state);
+            const queue = findQueue(state, msg.queueId);
+            if (queue) {
+              queue.isRunning = false;
+              await saveState(state);
+            }
           });
           sendResponse({ ok: true });
           return;
         }
 
         case 'SEND_NOW': {
-          const res = await dispatchNextForMode(msg.mode, msg.itemId);
+          const res = await dispatchNextForQueue(msg.queueId, msg.itemId);
           sendResponse(res);
           return;
         }
 
         case 'FORCE_COMPLETE_ACTIVE': {
           const state = await loadState();
-          const activeId = state.modes[msg.mode]?.activeItemId;
-          if (activeId) {
-            await handlePromptCompleted(msg.mode, activeId, true);
+          const queue = findQueue(state, msg.queueId);
+          if (queue && queue.activeItemId) {
+            await handlePromptCompleted(queue.id, queue.activeItemId, true);
           }
           sendResponse({ ok: true });
           return;
         }
 
         case 'PROMPT_COMPLETED': {
-          await handlePromptCompleted(msg.mode, msg.itemId, msg.success !== false, msg.error || null);
+          await handlePromptCompleted(msg.queueId, msg.itemId, msg.success !== false, msg.error || null);
           sendResponse({ ok: true });
           return;
         }
@@ -661,7 +788,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
   })();
 
-  return true; // Keep async message channel open
+  return true;
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
@@ -672,11 +799,11 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.runtime.onStartup.addListener(async () => {
   const state = await loadState();
   let changed = false;
-  for (const mode of ['chat', 'task']) {
-    if (state.modes[mode].activeItemId) {
-      state.modes[mode].activeItemId = null;
-      state.modes[mode].isRunning = false;
-      for (const item of state.modes[mode].items) {
+  for (const queue of state.queues) {
+    if (queue.activeItemId) {
+      queue.activeItemId = null;
+      queue.isRunning = false;
+      for (const item of queue.items) {
         if (item.status === 'running') item.status = 'pending';
       }
       changed = true;

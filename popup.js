@@ -2,13 +2,12 @@
 
 let appState = null;
 let editingItemId = null;
+let isRenamingQueue = false;
 let toastTimer = null;
 
 const el = {
-  tabChat: document.getElementById('tabChat'),
-  tabTask: document.getElementById('tabTask'),
-  badgeChat: document.getElementById('badgeChat'),
-  badgeTask: document.getElementById('badgeTask'),
+  queueTabs: document.getElementById('queueTabs'),
+  btnAddQueue: document.getElementById('btnAddQueue'),
   btnToggleRun: document.getElementById('btnToggleRun'),
   btnBindTab: document.getElementById('btnBindTab'),
   btnForceNext: document.getElementById('btnForceNext'),
@@ -17,7 +16,7 @@ const el = {
   numSettleDelay: document.getElementById('numSettleDelay'),
   composerBox: document.getElementById('composerBox'),
   editBanner: document.getElementById('editBanner'),
-  selMoveMode: document.getElementById('selMoveMode'),
+  selMoveQueue: document.getElementById('selMoveQueue'),
   btnCancelEdit: document.getElementById('btnCancelEdit'),
   txtPrompt: document.getElementById('txtPrompt'),
   dtSchedule: document.getElementById('dtSchedule'),
@@ -25,6 +24,9 @@ const el = {
   btnSubmitPrompt: document.getElementById('btnSubmitPrompt'),
   statusToast: document.getElementById('statusToast'),
   queueTitle: document.getElementById('queueTitle'),
+  inpRenameQueue: document.getElementById('inpRenameQueue'),
+  btnRenameQueue: document.getElementById('btnRenameQueue'),
+  btnDeleteQueue: document.getElementById('btnDeleteQueue'),
   btnClearCompleted: document.getElementById('btnClearCompleted'),
   btnClearAll: document.getElementById('btnClearAll'),
   queueList: document.getElementById('queueList')
@@ -71,12 +73,14 @@ function formatSchedule(timestampMs) {
   });
 }
 
-function activeMode() {
-  return appState ? appState.activeMode : 'chat';
+function activeQueue() {
+  if (!appState || !appState.queues || appState.queues.length === 0) return null;
+  return appState.queues.find((q) => q.id === appState.activeQueueId) || appState.queues[0];
 }
 
-function currentModeState() {
-  return appState.modes[activeMode()];
+function activeQueueId() {
+  const q = activeQueue();
+  return q ? q.id : null;
 }
 
 function cancelEdit() {
@@ -88,35 +92,98 @@ function cancelEdit() {
   el.dtSchedule.value = '';
 }
 
+function populateMoveSelect(selectedQueueId) {
+  el.selMoveQueue.innerHTML = '';
+  if (!appState) return;
+  for (const q of appState.queues) {
+    const opt = document.createElement('option');
+    opt.value = q.id;
+    opt.textContent = q.name;
+    if (q.id === selectedQueueId) opt.selected = true;
+    el.selMoveQueue.appendChild(opt);
+  }
+}
+
 function startEdit(item) {
   editingItemId = item.id;
   el.composerBox.classList.add('editing');
   el.editBanner.classList.remove('hidden');
-  el.selMoveMode.value = activeMode();
+  populateMoveSelect(activeQueueId());
   el.btnSubmitPrompt.textContent = 'Save / Replace';
   el.txtPrompt.value = item.text;
   el.dtSchedule.value = toDatetimeLocalValue(item.scheduledAt);
   el.txtPrompt.focus();
 }
 
+function startRenameQueue() {
+  const q = activeQueue();
+  if (!q) return;
+  isRenamingQueue = true;
+  el.queueTitle.classList.add('hidden');
+  el.btnRenameQueue.classList.add('hidden');
+  el.inpRenameQueue.classList.remove('hidden');
+  el.inpRenameQueue.value = q.name;
+  el.inpRenameQueue.focus();
+  el.inpRenameQueue.select();
+}
+
+async function finishRenameQueue(save = true) {
+  if (!isRenamingQueue) return;
+  isRenamingQueue = false;
+  const newName = el.inpRenameQueue.value.trim();
+  el.inpRenameQueue.classList.add('hidden');
+  el.queueTitle.classList.remove('hidden');
+  el.btnRenameQueue.classList.remove('hidden');
+  if (save && newName) {
+    await sendBg({ type: 'RENAME_QUEUE', queueId: activeQueueId(), name: newName });
+  }
+}
+
+function renderQueueTabs(currentQ) {
+  el.queueTabs.innerHTML = '';
+  for (const q of appState.queues) {
+    const btn = document.createElement('button');
+    btn.className = `queue-tab${q.id === currentQ.id ? ' active' : ''}`;
+    btn.setAttribute('role', 'tab');
+    btn.title = q.boundTabLabel ? `${q.name} (Pinned: ${q.boundTabLabel})` : q.name;
+
+    const dot = document.createElement('span');
+    dot.className = `tab-dot${q.isRunning ? ' tab-run-pulse' : ''}`;
+    dot.style.background = q.color || '#38bdf8';
+    dot.style.color = q.color || '#38bdf8';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = q.name;
+
+    const pendingCount = q.items.filter((i) => i.status !== 'completed').length;
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = String(pendingCount);
+
+    btn.append(dot, nameSpan, badge);
+    btn.addEventListener('click', () => switchQueue(q.id));
+    btn.addEventListener('dblclick', () => {
+      if (q.id === activeQueueId()) startRenameQueue();
+    });
+
+    el.queueTabs.appendChild(btn);
+  }
+}
+
 function render() {
-  if (!appState) return;
-  const mode = activeMode();
-  const ms = currentModeState();
+  const q = activeQueue();
+  if (!q) return;
 
-  document.body.classList.toggle('mode-task', mode === 'task');
-  el.tabChat.classList.toggle('active', mode === 'chat');
-  el.tabTask.classList.toggle('active', mode === 'task');
+  document.documentElement.style.setProperty('--accent', q.color || '#38bdf8');
+  renderQueueTabs(q);
 
-  const chatCount = appState.modes.chat.items.filter((i) => i.status !== 'completed').length;
-  const taskCount = appState.modes.task.items.filter((i) => i.status !== 'completed').length;
-  el.badgeChat.textContent = String(chatCount);
-  el.badgeTask.textContent = String(taskCount);
+  if (!isRenamingQueue) {
+    el.queueTitle.textContent = q.boundTabLabel ? `${q.name} (${q.boundTabLabel})` : q.name;
+  }
 
-  el.queueTitle.textContent = mode === 'task' ? 'Task Mode Queue' : 'Chat Mode Queue';
+  el.btnDeleteQueue.classList.toggle('hidden', appState.queues.length <= 1);
 
-  // Run / Pause button
-  if (ms.isRunning) {
+  if (q.isRunning) {
     el.btnToggleRun.textContent = '⏸ Pause Queue';
     el.btnToggleRun.classList.add('running');
   } else {
@@ -124,38 +191,33 @@ function render() {
     el.btnToggleRun.classList.remove('running');
   }
 
-  // Pin Tab button
-  if (ms.boundTabId) {
-    el.btnBindTab.textContent = `📌 ${ms.boundTabLabel || 'Tab Pinned'}`;
+  if (q.boundTabId) {
+    el.btnBindTab.textContent = `📌 ${q.boundTabLabel || 'Tab Pinned'}`;
     el.btnBindTab.classList.add('pinned');
   } else {
     el.btnBindTab.textContent = '📌 Pin Tab';
     el.btnBindTab.classList.remove('pinned');
   }
 
-  // Manual Next button when a prompt is currently running
-  el.btnForceNext.classList.toggle('hidden', !ms.activeItemId);
+  el.btnForceNext.classList.toggle('hidden', !q.activeItemId);
 
-  // Settings
-  el.chkSequential.checked = Boolean(ms.sequential);
-  el.chkAutoRemove.checked = Boolean(ms.autoRemoveCompleted);
-  el.numSettleDelay.value = String(ms.settleDelaySec || (mode === 'task' ? 5 : 3));
+  el.chkSequential.checked = Boolean(q.sequential);
+  el.chkAutoRemove.checked = Boolean(q.autoRemoveCompleted);
+  el.numSettleDelay.value = String(q.settleDelaySec || 3);
 
-  // Clear Done visibility
-  const hasCompleted = ms.items.some((i) => i.status === 'completed');
+  const hasCompleted = q.items.some((i) => i.status === 'completed');
   el.btnClearCompleted.classList.toggle('hidden', !hasCompleted);
 
-  // Queue list
   el.queueList.innerHTML = '';
-  if (ms.items.length === 0) {
+  if (q.items.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.textContent = `No prompts in ${mode === 'task' ? 'Task' : 'Chat'} Mode yet. Add one above!`;
+    empty.textContent = `No prompts in "${q.name}" yet. Add one above!`;
     el.queueList.appendChild(empty);
     return;
   }
 
-  ms.items.forEach((item, index) => {
+  q.items.forEach((item, index) => {
     const card = document.createElement('div');
     card.className = `card ${item.status}`;
 
@@ -204,35 +266,38 @@ function render() {
     actions.className = 'card-actions';
 
     if (index > 0) {
-      const upBtn = makeMiniBtn('↑', 'Move up', async () => {
-        await sendBg({ type: 'REORDER_PROMPT', mode, itemId: item.id, direction: 'up' });
-      });
-      actions.appendChild(upBtn);
+      actions.appendChild(
+        makeMiniBtn('↑', 'Move up', async () => {
+          await sendBg({ type: 'REORDER_PROMPT', queueId: q.id, itemId: item.id, direction: 'up' });
+        })
+      );
     }
 
-    if (index < ms.items.length - 1) {
-      const downBtn = makeMiniBtn('↓', 'Move down', async () => {
-        await sendBg({ type: 'REORDER_PROMPT', mode, itemId: item.id, direction: 'down' });
-      });
-      actions.appendChild(downBtn);
+    if (index < q.items.length - 1) {
+      actions.appendChild(
+        makeMiniBtn('↓', 'Move down', async () => {
+          await sendBg({ type: 'REORDER_PROMPT', queueId: q.id, itemId: item.id, direction: 'down' });
+        })
+      );
     }
 
     if (item.status !== 'running') {
-      const sendBtn = makeMiniBtn(item.status === 'completed' ? 'Re-run' : 'Send Now', 'Send immediately', async () => {
-        const res = await sendBg({ type: 'SEND_NOW', mode, itemId: item.id });
-        if (!res.ok) showToast(res.reason || res.error || 'Could not send prompt', true);
-      });
-      actions.appendChild(sendBtn);
+      actions.appendChild(
+        makeMiniBtn(item.status === 'completed' ? 'Re-run' : 'Send Now', 'Send immediately', async () => {
+          const res = await sendBg({ type: 'SEND_NOW', queueId: q.id, itemId: item.id });
+          if (!res.ok) showToast(res.reason || res.error || 'Could not send prompt', true);
+        })
+      );
     }
 
-    const editBtn = makeMiniBtn('Edit', 'Edit or replace prompt', () => startEdit(item));
-    actions.appendChild(editBtn);
+    actions.appendChild(makeMiniBtn('Edit', 'Edit or move prompt', () => startEdit(item)));
 
-    const delBtn = makeMiniBtn('✕', 'Delete prompt', async () => {
-      if (editingItemId === item.id) cancelEdit();
-      await sendBg({ type: 'DELETE_PROMPT', mode, itemId: item.id });
-    }, 'danger');
-    actions.appendChild(delBtn);
+    actions.appendChild(
+      makeMiniBtn('✕', 'Delete prompt', async () => {
+        if (editingItemId === item.id) cancelEdit();
+        await sendBg({ type: 'DELETE_PROMPT', queueId: q.id, itemId: item.id });
+      }, 'danger')
+    );
 
     card.appendChild(actions);
     el.queueList.appendChild(card);
@@ -250,33 +315,62 @@ function makeMiniBtn(label, title, onClick, extraClass = '') {
 
 // --- Event Listeners ---
 
-async function switchMode(mode) {
+async function switchQueue(queueId) {
+  if (queueId === activeQueueId()) return;
   cancelEdit();
-  await sendBg({ type: 'SET_ACTIVE_MODE', mode });
+  await finishRenameQueue(false);
+  await sendBg({ type: 'SET_ACTIVE_QUEUE', queueId });
 }
 
-el.tabChat.addEventListener('click', () => switchMode('chat'));
-el.tabTask.addEventListener('click', () => switchMode('task'));
+el.btnAddQueue.addEventListener('click', async () => {
+  cancelEdit();
+  await finishRenameQueue(false);
+  const res = await sendBg({ type: 'CREATE_QUEUE' });
+  if (res && res.ok) {
+    showToast(`Created "${res.queue.name}". Click ✎ to rename it.`);
+  }
+});
+
+el.btnRenameQueue.addEventListener('click', startRenameQueue);
+el.inpRenameQueue.addEventListener('blur', () => finishRenameQueue(true));
+el.inpRenameQueue.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    finishRenameQueue(true);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    finishRenameQueue(false);
+  }
+});
+
+el.btnDeleteQueue.addEventListener('click', async () => {
+  const q = activeQueue();
+  if (!q || appState.queues.length <= 1) return;
+  cancelEdit();
+  await sendBg({ type: 'DELETE_QUEUE', queueId: q.id });
+  showToast(`Deleted "${q.name}".`);
+});
 
 el.btnToggleRun.addEventListener('click', async () => {
-  const mode = activeMode();
-  const ms = currentModeState();
-  if (ms.isRunning) {
-    await sendBg({ type: 'PAUSE_QUEUE', mode });
-    showToast(`${mode === 'task' ? 'Task' : 'Chat'} queue paused.`);
+  const q = activeQueue();
+  if (!q) return;
+  if (q.isRunning) {
+    await sendBg({ type: 'PAUSE_QUEUE', queueId: q.id });
+    showToast(`"${q.name}" paused.`);
   } else {
-    const res = await sendBg({ type: 'START_QUEUE', mode });
+    const res = await sendBg({ type: 'START_QUEUE', queueId: q.id });
     if (!res.ok) {
       showToast(res.reason || res.error || 'Queue started (waiting for scheduled prompts).', !res.reason?.includes('No eligible'));
     } else {
-      showToast(`${mode === 'task' ? 'Task' : 'Chat'} queue running!`);
+      showToast(`"${q.name}" running on ${res.provider || 'AI tab'}!`);
     }
   }
 });
 
 el.btnBindTab.addEventListener('click', async () => {
-  const mode = activeMode();
-  const isPinned = Boolean(currentModeState().boundTabId);
+  const q = activeQueue();
+  if (!q) return;
+  const isPinned = Boolean(q.boundTabId);
 
   if (!isPinned) {
     try {
@@ -297,34 +391,30 @@ el.btnBindTab.addEventListener('click', async () => {
     }
   }
 
-  const res = await sendBg({ type: 'BIND_CURRENT_TAB', mode, unbind: isPinned });
+  const res = await sendBg({ type: 'BIND_CURRENT_TAB', queueId: q.id, unbind: isPinned });
   if (!res.ok) {
     showToast(res.error || 'Open an AI tab first to pin it.', true);
   } else {
-    showToast(
-      isPinned
-        ? 'Unpinned tab.'
-        : `Pinned ${res.label || 'tab'} to ${mode === 'task' ? 'Task' : 'Chat'} Mode.`
-    );
+    showToast(isPinned ? 'Unpinned tab.' : `Pinned ${res.label || 'tab'} to "${q.name}".`);
   }
 });
 
 el.btnForceNext.addEventListener('click', async () => {
-  await sendBg({ type: 'FORCE_COMPLETE_ACTIVE', mode: activeMode() });
+  await sendBg({ type: 'FORCE_COMPLETE_ACTIVE', queueId: activeQueueId() });
 });
 
 el.chkSequential.addEventListener('change', async () => {
-  await sendBg({ type: 'UPDATE_SETTINGS', mode: activeMode(), sequential: el.chkSequential.checked });
+  await sendBg({ type: 'UPDATE_SETTINGS', queueId: activeQueueId(), sequential: el.chkSequential.checked });
 });
 
 el.chkAutoRemove.addEventListener('change', async () => {
-  await sendBg({ type: 'UPDATE_SETTINGS', mode: activeMode(), autoRemoveCompleted: el.chkAutoRemove.checked });
+  await sendBg({ type: 'UPDATE_SETTINGS', queueId: activeQueueId(), autoRemoveCompleted: el.chkAutoRemove.checked });
 });
 
 el.numSettleDelay.addEventListener('change', async () => {
   const val = Math.max(1, Math.min(60, Number(el.numSettleDelay.value) || 3));
   el.numSettleDelay.value = String(val);
-  await sendBg({ type: 'UPDATE_SETTINGS', mode: activeMode(), settleDelaySec: val });
+  await sendBg({ type: 'UPDATE_SETTINGS', queueId: activeQueueId(), settleDelaySec: val });
 });
 
 el.btnClearSchedule.addEventListener('click', () => {
@@ -346,17 +436,17 @@ async function submitComposer() {
     if (!Number.isNaN(parsed)) scheduledAt = parsed;
   }
 
-  const mode = activeMode();
+  const qId = activeQueueId();
 
   if (editingItemId) {
-    const targetMode = el.selMoveMode.value;
+    const targetQueueId = el.selMoveQueue.value;
     await sendBg({
       type: 'UPDATE_PROMPT',
-      mode,
+      queueId: qId,
       itemId: editingItemId,
       text,
       scheduledAt,
-      targetMode,
+      targetQueueId,
       resetStatus: true
     });
     cancelEdit();
@@ -364,7 +454,7 @@ async function submitComposer() {
   } else {
     await sendBg({
       type: 'ADD_PROMPT',
-      mode,
+      queueId: qId,
       text,
       scheduledAt
     });
@@ -384,13 +474,14 @@ el.txtPrompt.addEventListener('keydown', (e) => {
 });
 
 el.btnClearCompleted.addEventListener('click', async () => {
-  await sendBg({ type: 'CLEAR_QUEUE', mode: activeMode(), completedOnly: true });
+  await sendBg({ type: 'CLEAR_QUEUE', queueId: activeQueueId(), completedOnly: true });
 });
 
 el.btnClearAll.addEventListener('click', async () => {
-  if (currentModeState().items.length === 0) return;
+  const q = activeQueue();
+  if (!q || q.items.length === 0) return;
   cancelEdit();
-  await sendBg({ type: 'CLEAR_QUEUE', mode: activeMode(), completedOnly: false });
+  await sendBg({ type: 'CLEAR_QUEUE', queueId: q.id, completedOnly: false });
   showToast('Queue cleared.');
 });
 

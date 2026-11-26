@@ -411,7 +411,7 @@
     activeWatch = null;
   }
 
-  async function executeAndWatch({ mode, itemId, text, settleDelayMs = 3000 }) {
+  async function executeAndWatch({ queueId, itemId, text, settleDelayMs = 3000 }) {
     stopActiveWatch();
 
     const adapter = getAdapter();
@@ -480,14 +480,14 @@
         stopActiveWatch();
         chrome.runtime.sendMessage({
           type: 'PROMPT_COMPLETED',
-          mode,
+          queueId,
           itemId,
           success: true
         }).catch(() => {});
       }
     }, 500);
 
-    activeWatch = { mode, itemId, observer, interval };
+    activeWatch = { queueId, itemId, observer, interval };
     return { ok: true };
   }
 
@@ -495,18 +495,14 @@
   const PILL_ID = 'uapq-status-pill';
 
   function updateOverlayPill(payload) {
-    const activeModes = [];
-    for (const m of ['chat', 'task']) {
-      const info = payload[m];
-      if (!info) continue;
-      const matchesTab = !info.boundTabId || info.boundTabId === payload.tabId;
-      if (matchesTab && (info.isRunning || info.activeItemId)) {
-        activeModes.push({ mode: m, ...info });
-      }
-    }
+    const queues = Array.isArray(payload?.queues) ? payload.queues : [];
+    const activeQueues = queues.filter((q) => {
+      const matchesTab = !q.boundTabId || q.boundTabId === payload.tabId;
+      return matchesTab && (q.isRunning || q.activeItemId);
+    });
 
     let pill = document.getElementById(PILL_ID);
-    if (activeModes.length === 0) {
+    if (activeQueues.length === 0) {
       if (pill) pill.remove();
       return;
     }
@@ -535,10 +531,9 @@
       document.body.appendChild(pill);
     }
 
-    const primary = activeModes[0];
+    const primary = activeQueues[0];
     const adapter = getAdapter();
-    const modeLabel = primary.mode === 'task' ? 'Task' : 'Chat';
-    const dotColor = primary.mode === 'task' ? '#a78bfa' : '#38bdf8';
+    const dotColor = primary.color || '#38bdf8';
 
     pill.innerHTML = '';
 
@@ -552,21 +547,21 @@
     });
 
     const label = document.createElement('span');
-    label.textContent = `${adapter.name} [${modeLabel}] • ${primary.remaining} left`;
+    label.textContent = `${adapter.name} • ${primary.name} • ${primary.remaining} left`;
 
     const nextBtn = document.createElement('button');
     nextBtn.textContent = 'Next';
     stylePillBtn(nextBtn, '#1e293b', '#e2e8f0');
     nextBtn.onclick = () => {
       stopActiveWatch();
-      chrome.runtime.sendMessage({ type: 'FORCE_COMPLETE_ACTIVE', mode: primary.mode });
+      chrome.runtime.sendMessage({ type: 'FORCE_COMPLETE_ACTIVE', queueId: primary.id });
     };
 
     const pauseBtn = document.createElement('button');
     pauseBtn.textContent = 'Pause';
     stylePillBtn(pauseBtn, '#7f1d1d', '#fecaca');
     pauseBtn.onclick = () => {
-      chrome.runtime.sendMessage({ type: 'PAUSE_QUEUE', mode: primary.mode });
+      chrome.runtime.sendMessage({ type: 'PAUSE_QUEUE', queueId: primary.id });
     };
 
     pill.append(dot, label, nextBtn, pauseBtn);
