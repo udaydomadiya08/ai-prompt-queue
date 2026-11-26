@@ -106,6 +106,7 @@ function createQueueObject(name = 'Queue 1', colorIndex = 0, overrides = {}) {
     settleDelaySec: typeof overrides.settleDelaySec === 'number' ? overrides.settleDelaySec : 3,
     boundTabId: overrides.boundTabId || null,
     boundTabLabel: overrides.boundTabLabel || null,
+    boundTabTitle: overrides.boundTabTitle || null,
     activeItemId: overrides.activeItemId || null,
     items: Array.isArray(overrides.items) ? overrides.items : []
   };
@@ -241,30 +242,45 @@ async function syncAllAlarms(state) {
   }
 }
 
-async function resolveTargetTab(queue) {
+function pinQueueToTab(queue, tab) {
+  queue.boundTabId = tab.id;
+  queue.boundTabLabel = getProviderLabel(tab.url);
+  queue.boundTabTitle = (tab.title || '').trim() || null;
+}
+
+async function resolveTargetTab(state, queue) {
   // 1. Check boundTabId if set (supports ANY http/https tab)
   if (queue.boundTabId) {
     try {
       const tab = await chrome.tabs.get(queue.boundTabId);
       if (tab && isWebUrl(tab.url)) {
+        queue.boundTabTitle = (tab.title || '').trim() || queue.boundTabTitle;
         return tab;
       }
     } catch {
       queue.boundTabId = null;
       queue.boundTabLabel = null;
+      queue.boundTabTitle = null;
     }
   }
 
-  // 2. Try currently active tab if it's a known AI platform
+  const usedTabIds = new Set(
+    state.queues.filter((q) => q.id !== queue.id && q.boundTabId).map((q) => q.boundTabId)
+  );
+
+  // 2. Try currently active tab if it's a known AI platform (auto-pin it!)
   const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
   if (activeTabs[0] && isKnownAiUrl(activeTabs[0].url)) {
+    pinQueueToTab(queue, activeTabs[0]);
     return activeTabs[0];
   }
 
-  // 3. Any open tab on a known AI platform
+  // 3. Any open AI tab not already pinned to another queue, then any open AI tab
   const allTabs = await chrome.tabs.query({});
-  const aiTab = allTabs.find((t) => isKnownAiUrl(t.url));
+  const freeAiTab = allTabs.find((t) => isKnownAiUrl(t.url) && !usedTabIds.has(t.id));
+  const aiTab = freeAiTab || allTabs.find((t) => isKnownAiUrl(t.url));
   if (aiTab) {
+    pinQueueToTab(queue, aiTab);
     return aiTab;
   }
 
@@ -362,7 +378,7 @@ async function dispatchNextForQueue(queueId, specificItemId = null) {
       return { ok: false, reason: 'No eligible prompt to send right now' };
     }
 
-    const tab = await resolveTargetTab(queue);
+    const tab = await resolveTargetTab(state, queue);
     if (!tab || !tab.id) {
       item.lastError = 'No AI tab found. Open ChatGPT, Claude, DeepSeek, Gemini, etc., or Pin any AI tab.';
       queue.isRunning = false;
@@ -487,6 +503,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
       if (queue.boundTabId === tabId) {
         queue.boundTabId = null;
         queue.boundTabLabel = null;
+        queue.boundTabTitle = null;
         changed = true;
       }
     }
@@ -519,11 +536,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         case 'CREATE_QUEUE': {
           let created = null;
+          const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          const activeTab = activeTabs[0];
+
           await withStateLock(async () => {
             const state = await loadState();
             const nextNum = state.queues.length + 1;
             const name = (msg.name || '').trim() || `Queue ${nextNum}`;
             created = createQueueObject(name, state.queues.length);
+
+            // Auto-pin to the active AI tab if it isn't already pinned to another queue
+            if (activeTab && isKnownAiUrl(activeTab.url)) {
+              const alreadyPinned = state.queues.some((q) => q.boundTabId === activeTab.id);
+              if (!alreadyPinned) {
+                pinQueueToTab(created, activeTab);
+              }
+            }
+
             state.queues.push(created);
             state.activeQueueId = created.id;
             await saveState(state);
@@ -701,6 +730,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               if (queue) {
                 queue.boundTabId = null;
                 queue.boundTabLabel = null;
+                queue.boundTabTitle = null;
                 await saveState(state);
               }
             });
@@ -715,19 +745,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             return;
           }
 
-          const label = getProviderLabel(current.url);
           await ensureContentScript(current.id);
 
           await withStateLock(async () => {
             const state = await loadState();
             const queue = findQueue(state, msg.queueId);
             if (queue) {
-              queue.boundTabId = current.id;
-              queue.boundTabLabel = label;
+              pinQueueToTab(queue, current);
               await saveState(state);
             }
           });
-          sendResponse({ ok: true, tabId: current.id, label });
+          sendResponse({ ok: true, tabId: current.id, label: getProviderLabel(current.url) });
           return;
         }
 

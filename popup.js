@@ -193,9 +193,13 @@ function render() {
 
   if (q.boundTabId) {
     el.btnBindTab.textContent = `📌 ${q.boundTabLabel || 'Tab Pinned'}`;
+    el.btnBindTab.title = q.boundTabTitle
+      ? `Pinned to: ${q.boundTabTitle} (click to unpin)`
+      : 'Pinned to tab (click to unpin)';
     el.btnBindTab.classList.add('pinned');
   } else {
     el.btnBindTab.textContent = '📌 Pin Tab';
+    el.btnBindTab.title = 'Pin this queue to the active AI tab (auto-pins when started)';
     el.btnBindTab.classList.remove('pinned');
   }
 
